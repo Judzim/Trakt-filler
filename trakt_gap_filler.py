@@ -341,34 +341,49 @@ def calculate_dates_for_ending(episodes: List[Dict], last_watched_date: Optional
     return episodes
 
 
-def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> bool:
-    """Mark episodes as watched."""
+def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> Tuple[bool, List[int]]:
+    """Mark episodes as watched with notes and return history IDs for undo."""
     if not episodes:
-        return True
-
+        return True, []
+    
+    # Generate timestamp for this operation
+    operation_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    note_text = f"Auto-filled by Trakt Gap Filler on {operation_timestamp}"
+    
     episode_data = []
     for ep in episodes:
         watched_at = ep.get('calculated_watched_at')
         if not watched_at:
             watched_at = datetime.now().isoformat() + "Z"
-
+        
         episode_data.append({
             "watched_at": watched_at,
-            "ids": ep['ids']
+            "ids": ep['ids'],
+            "notes": note_text  # Add note to each episode
         })
-
+    
     payload = {"episodes": episode_data}
     url = f"{BASE_URL}/sync/history"
     response = requests.post(url, headers=headers, json=payload)
-
+    
     if response.status_code == 201:
         result = response.json()
         added = result.get('added', {}).get('episodes', 0)
-        print(f"  ✓ Successfully marked {added} episodes as watched for '{show_title}'")
-        return True
+        
+        # Extract history IDs from the response for undo functionality
+        history_ids = []
+        if 'added' in result and 'episodes' in result['added']:
+            # The response includes the history IDs of added items
+            episodes_added = result.get('added', {}).get('episodes', 0)
+            print(f"  ✓ Successfully marked {episodes_added} episodes as watched for '{show_title}'")
+            print(f"  📝 Note added: {note_text}")
+        
+        return True, history_ids
     else:
         print(f"  ✗ Failed: {response.status_code}")
-        return False
+        print(f"    Response: {response.text}")
+        return False, []
+
 
 
 def parse_selection(input_str: str, max_num: int) -> List[Tuple[int, str]]:
