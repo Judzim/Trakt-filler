@@ -348,7 +348,7 @@ def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> Tup
     
     # Generate timestamp for this operation
     operation_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    note_text = f"Auto-filled by Trakt Gap Filler on {operation_timestamp}"
+    note_text = f"Auto-filled by Trakt Filler on {operation_timestamp}"
     
     episode_data = []
     for ep in episodes:
