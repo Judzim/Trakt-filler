@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Trakt Episode Gap Filler - Complete Edition
+Trakt Episode Filler
 Intelligently fills gaps, beginnings, and endings of TV shows.
 """
 
 import requests
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Set, Tuple, Optional
 
 BASE_URL = "https://api.trakt.tv"
@@ -100,8 +100,7 @@ def get_all_episodes(headers, show_id: str) -> List[Dict]:
 
     episodes = []
     for season in response.json():
-        if season['number'] == 0:
-            continue
+        # Tu ešte nefiltrujeme S0, potrebujeme všetky dáta na porovnanie
         for episode in season.get('episodes', []):
             episodes.append({
                 'season': season['number'],
@@ -148,26 +147,44 @@ def calculate_average_interval(watch_history: Dict) -> timedelta:
 
 
 def find_all_missing_episodes(watched_episodes: Set[tuple], all_episodes: List[Dict], 
-                               watch_history: Dict) -> Dict:
-    """Find beginning, gaps, and ending episodes."""
+                              watch_history: Dict) -> Dict:
+    """Find beginning, gaps, and ending episodes (IGNORING S0 and UNAIRED)."""
     watched_list = sorted(list(watched_episodes))
-    episode_map = {(ep['season'], ep['episode']): ep for ep in all_episodes}
-
+    
     result = {
         'beginning': [],
         'gaps': [],
         'ending': []
     }
 
+    now = datetime.now(timezone.utc)
+
+    # Ignore future unaired episodes and season 0
+    valid_episodes = []
+    for ep in all_episodes:
+        if ep['season'] == 0:
+            continue
+        
+        if ep.get('first_aired'):
+            air_date = parse_datetime(ep['first_aired'])
+            if air_date and air_date > now:
+                continue
+        else:
+            continue
+            
+        valid_episodes.append(ep)
+
+    if not valid_episodes:
+        return result
+
     if not watched_list:
-        # Nothing watched - all are beginning episodes
-        result['beginning'] = all_episodes
+        result['beginning'] = valid_episodes
         return result
 
     first_watched = watched_list[0]
     last_watched = watched_list[-1]
 
-    for ep in all_episodes:
+    for ep in valid_episodes:
         ep_tuple = (ep['season'], ep['episode'])
 
         if ep_tuple in watched_episodes:
@@ -276,7 +293,7 @@ def calculate_intelligent_dates_for_gaps(gaps: List[Dict]) -> List[Dict]:
 
 
 def calculate_dates_for_beginning(episodes: List[Dict], first_watched_date: Optional[str], 
-                                   avg_interval: timedelta) -> List[Dict]:
+                                  avg_interval: timedelta) -> List[Dict]:
     """Calculate dates for episodes before first watched."""
     episodes.sort(key=lambda x: (x['season'], x['episode']))
 
@@ -309,7 +326,7 @@ def calculate_dates_for_beginning(episodes: List[Dict], first_watched_date: Opti
 
 
 def calculate_dates_for_ending(episodes: List[Dict], last_watched_date: Optional[str], 
-                                avg_interval: timedelta) -> List[Dict]:
+                               avg_interval: timedelta) -> List[Dict]:
     """Calculate dates for episodes after last watched."""
     episodes.sort(key=lambda x: (x['season'], x['episode']))
 
@@ -341,49 +358,34 @@ def calculate_dates_for_ending(episodes: List[Dict], last_watched_date: Optional
     return episodes
 
 
-def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> Tuple[bool, List[int]]:
-    """Mark episodes as watched with notes and return history IDs for undo."""
+def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> bool:
+    """Mark episodes as watched."""
     if not episodes:
-        return True, []
-    
-    # Generate timestamp for this operation
-    operation_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    note_text = f"Auto-filled by Trakt Filler on {operation_timestamp}"
-    
+        return True
+
     episode_data = []
     for ep in episodes:
         watched_at = ep.get('calculated_watched_at')
         if not watched_at:
             watched_at = datetime.now().isoformat() + "Z"
-        
+
         episode_data.append({
             "watched_at": watched_at,
-            "ids": ep['ids'],
-            "notes": note_text  # Add note to each episode
+            "ids": ep['ids']
         })
-    
+
     payload = {"episodes": episode_data}
     url = f"{BASE_URL}/sync/history"
     response = requests.post(url, headers=headers, json=payload)
-    
+
     if response.status_code == 201:
         result = response.json()
         added = result.get('added', {}).get('episodes', 0)
-        
-        # Extract history IDs from the response for undo functionality
-        history_ids = []
-        if 'added' in result and 'episodes' in result['added']:
-            # The response includes the history IDs of added items
-            episodes_added = result.get('added', {}).get('episodes', 0)
-            print(f"  ✓ Successfully marked {episodes_added} episodes as watched for '{show_title}'")
-            print(f"  📝 Note added: {note_text}")
-        
-        return True, history_ids
+        print(f"  ✓ Successfully marked {added} episodes as watched for '{show_title}'")
+        return True
     else:
         print(f"  ✗ Failed: {response.status_code}")
-        print(f"    Response: {response.text}")
-        return False, []
-
+        return False
 
 
 def parse_selection(input_str: str, max_num: int) -> List[Tuple[int, str]]:
@@ -443,7 +445,7 @@ def parse_selection(input_str: str, max_num: int) -> List[Tuple[int, str]]:
 def main():
     """Main function."""
     print("=" * 70)
-    print("Trakt Episode Gap Filler - Complete Edition")
+    print("Trakt Episode Gap Filler")
     print("=" * 70)
     print()
 
@@ -487,6 +489,13 @@ def main():
         show_title = show['title']
         show_id = show['ids']['trakt']
 
+        # quick filtering
+        total_aired = show.get('aired_episodes', 0)
+        watched_count = sum(len(season['episodes']) for season in show_data['seasons'])
+        
+        if watched_count >= total_aired and total_aired > 0:
+            continue
+
         watched_episodes = set()
         for season in show_data['seasons']:
             season_num = season['number']
@@ -494,7 +503,11 @@ def main():
                 episode_num = episode['number']
                 watched_episodes.add((season_num, episode_num))
 
-        all_episodes = get_all_episodes(headers, show_id)
+        try:
+            all_episodes = get_all_episodes(headers, show_id)
+        except:
+            continue
+
         show_history = watch_history_raw.get(show_id, {})
 
         missing = find_all_missing_episodes(watched_episodes, all_episodes, show_history)
@@ -516,7 +529,7 @@ def main():
                 'show_id': show_id,
                 'missing': missing,
                 'watched_count': len(watched_episodes),
-                'total_count': len(all_episodes),
+                'total_count': len(all_episodes), # Toto je orientačné
                 'avg_interval': avg_interval,
                 'first_watched_date': first_watched_date,
                 'last_watched_date': last_watched_date
@@ -536,7 +549,7 @@ def main():
 
     for idx, show in enumerate(shows_with_missing, 1):
         print(f"[{idx}] 📺 {show['title']}")
-        print(f"    Watched: {show['watched_count']}/{show['total_count']} episodes")
+        print(f"    Watched: {show['watched_count']} episodes")
 
         parts = []
         if show['missing']['beginning']:
