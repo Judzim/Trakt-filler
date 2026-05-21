@@ -1,2 +1,3 @@
 # Trakt Credentials - DO NOT COMMIT
 trakt_credentials.txt
+__pycache__/

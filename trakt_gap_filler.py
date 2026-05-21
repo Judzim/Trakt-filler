@@ -4,16 +4,17 @@ Trakt Episode Filler
 Intelligently fills gaps, beginnings, and endings of TV shows.
 """
 
-import requests
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Set, Tuple, Optional
+from typing import Dict, List, Optional, Set, Tuple
+
+import requests
 
 BASE_URL = "https://api.trakt.tv"
 
 
-def load_credentials(filename='trakt_credentials.txt'):
+def load_credentials(filename="trakt_credentials.txt"):
     """Load credentials from text file."""
     if not os.path.exists(filename):
         print(f"❌ Error: Credentials file '{filename}' not found!")
@@ -21,17 +22,21 @@ def load_credentials(filename='trakt_credentials.txt'):
         exit(1)
 
     credentials = {}
-    with open(filename, 'r') as f:
+    with open(filename, "r") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 continue
-            if '=' in line:
-                key, value = line.split('=', 1)
+            if "=" in line:
+                key, value = line.split("=", 1)
                 credentials[key.strip()] = value.strip()
 
-    required = ['CLIENT_ID', 'CLIENT_SECRET', 'ACCESS_TOKEN', 'USERNAME']
-    missing = [key for key in required if key not in credentials or credentials[key].startswith('YOUR_')]
+    required = ["CLIENT_ID", "CLIENT_SECRET", "ACCESS_TOKEN", "USERNAME"]
+    missing = [
+        key
+        for key in required
+        if key not in credentials or credentials[key].startswith("YOUR_")
+    ]
 
     if missing:
         print(f"❌ Error: Missing credentials in {filename}:")
@@ -48,8 +53,8 @@ def get_headers(credentials):
     return {
         "Content-Type": "application/json",
         "trakt-api-version": "2",
-        "trakt-api-key": credentials['CLIENT_ID'],
-        "Authorization": f"Bearer {credentials['ACCESS_TOKEN']}"
+        "trakt-api-key": credentials["CLIENT_ID"],
+        "Authorization": f"Bearer {credentials['ACCESS_TOKEN']}",
     }
 
 
@@ -67,25 +72,33 @@ def get_watched_shows(headers, username) -> List[Dict]:
 def get_watch_history(headers, username) -> Dict:
     """Get detailed watch history with timestamps."""
     url = f"{BASE_URL}/users/{username}/history/shows"
-    params = {"limit": 10000}
-
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
 
     history = {}
-    for entry in response.json():
-        show_id = entry['show']['ids']['trakt']
-        episode = entry['episode']
-        season_num = episode['season']
-        episode_num = episode['number']
-        watched_at = entry['watched_at']
+    page = 1
+    while True:
+        params = {"limit": 10000, "page": page}
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
 
-        if show_id not in history:
-            history[show_id] = {}
+        entries = response.json()
+        if not entries:
+            break
 
-        key = (season_num, episode_num)
-        if key not in history[show_id] or watched_at > history[show_id][key]:
-            history[show_id][key] = watched_at
+        for entry in entries:
+            show_id = entry["show"]["ids"]["trakt"]
+            episode = entry["episode"]
+            season_num = episode["season"]
+            episode_num = episode["number"]
+            watched_at = entry["watched_at"]
+
+            if show_id not in history:
+                history[show_id] = {}
+
+            key = (season_num, episode_num)
+            if key not in history[show_id] or watched_at > history[show_id][key]:
+                history[show_id][key] = watched_at
+
+        page += 1
 
     return history
 
@@ -101,13 +114,15 @@ def get_all_episodes(headers, show_id: str) -> List[Dict]:
     episodes = []
     for season in response.json():
         # Tu ešte nefiltrujeme S0, potrebujeme všetky dáta na porovnanie
-        for episode in season.get('episodes', []):
-            episodes.append({
-                'season': season['number'],
-                'episode': episode['number'],
-                'ids': episode['ids'],
-                'first_aired': episode.get('first_aired')
-            })
+        for episode in season.get("episodes", []):
+            episodes.append(
+                {
+                    "season": season["number"],
+                    "episode": episode["number"],
+                    "ids": episode["ids"],
+                    "first_aired": episode.get("first_aired"),
+                }
+            )
 
     return episodes
 
@@ -117,10 +132,10 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     if not dt_str:
         return None
     try:
-        if dt_str.endswith('Z'):
-            dt_str = dt_str[:-1] + '+00:00'
-        return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-    except:
+        if dt_str.endswith("Z"):
+            dt_str = dt_str[:-1] + "+00:00"
+        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    except Exception:
         return None
 
 
@@ -129,13 +144,15 @@ def calculate_average_interval(watch_history: Dict) -> timedelta:
     if len(watch_history) < 2:
         return timedelta(days=2)  # Default
 
-    dates = sorted([parse_datetime(dt) for dt in watch_history.values() if dt])
+    dates = sorted(
+        [d for d in (parse_datetime(dt) for dt in watch_history.values() if dt) if d]
+    )
     if len(dates) < 2:
         return timedelta(days=2)
 
     intervals = []
     for i in range(1, len(dates)):
-        interval = dates[i] - dates[i-1]
+        interval = dates[i] - dates[i - 1]
         if timedelta(0) < interval < timedelta(days=365):  # Ignore huge gaps
             intervals.append(interval)
 
@@ -146,55 +163,54 @@ def calculate_average_interval(watch_history: Dict) -> timedelta:
     return avg
 
 
-def find_all_missing_episodes(watched_episodes: Set[tuple], all_episodes: List[Dict], 
-                              watch_history: Dict) -> Dict:
+def find_all_missing_episodes(
+    watched_episodes: Set[tuple], all_episodes: List[Dict], watch_history: Dict
+) -> Dict:
     """Find beginning, gaps, and ending episodes (IGNORING S0 and UNAIRED)."""
     watched_list = sorted(list(watched_episodes))
-    
-    result = {
-        'beginning': [],
-        'gaps': [],
-        'ending': []
-    }
+
+    result = {"beginning": [], "gaps": [], "ending": []}
 
     now = datetime.now(timezone.utc)
 
     # Ignore future unaired episodes and season 0
     valid_episodes = []
     for ep in all_episodes:
-        if ep['season'] == 0:
+        if ep["season"] == 0:
             continue
-        
-        if ep.get('first_aired'):
-            air_date = parse_datetime(ep['first_aired'])
-            if air_date and air_date > now:
+
+        if ep.get("first_aired"):
+            air_date = parse_datetime(ep["first_aired"])
+            if not air_date:
+                continue
+            if air_date > now:
                 continue
         else:
             continue
-            
+
         valid_episodes.append(ep)
 
     if not valid_episodes:
         return result
 
     if not watched_list:
-        result['beginning'] = valid_episodes
+        result["beginning"] = valid_episodes
         return result
 
     first_watched = watched_list[0]
     last_watched = watched_list[-1]
 
     for ep in valid_episodes:
-        ep_tuple = (ep['season'], ep['episode'])
+        ep_tuple = (ep["season"], ep["episode"])
 
         if ep_tuple in watched_episodes:
             continue
 
         # Categorize
         if ep_tuple < first_watched:
-            result['beginning'].append(ep)
+            result["beginning"].append(ep)
         elif ep_tuple > last_watched:
-            result['ending'].append(ep)
+            result["ending"].append(ep)
         else:
             # It's a gap
             prev_watched = None
@@ -208,16 +224,20 @@ def find_all_missing_episodes(watched_episodes: Set[tuple], all_episodes: List[D
                     break
 
             gap_info = {
-                'season': ep['season'],
-                'episode': ep['episode'],
-                'ids': ep['ids'],
-                'first_aired': ep.get('first_aired'),
-                'prev_watched': prev_watched,
-                'next_watched': next_watched,
-                'prev_watched_at': watch_history.get(prev_watched) if prev_watched else None,
-                'next_watched_at': watch_history.get(next_watched) if next_watched else None
+                "season": ep["season"],
+                "episode": ep["episode"],
+                "ids": ep["ids"],
+                "first_aired": ep.get("first_aired"),
+                "prev_watched": prev_watched,
+                "next_watched": next_watched,
+                "prev_watched_at": watch_history.get(prev_watched)
+                if prev_watched
+                else None,
+                "next_watched_at": watch_history.get(next_watched)
+                if next_watched
+                else None,
             }
-            result['gaps'].append(gap_info)
+            result["gaps"].append(gap_info)
 
     return result
 
@@ -229,16 +249,24 @@ def calculate_intelligent_dates_for_gaps(gaps: List[Dict]) -> List[Dict]:
 
     gap_groups = {}
     for gap in gaps:
-        key = (gap['prev_watched'], gap['next_watched'])
+        key = (gap["prev_watched"], gap["next_watched"])
         if key not in gap_groups:
             gap_groups[key] = []
         gap_groups[key].append(gap)
 
     for (prev, next), group_gaps in gap_groups.items():
-        prev_date = parse_datetime(group_gaps[0]['prev_watched_at']) if group_gaps[0]['prev_watched_at'] else None
-        next_date = parse_datetime(group_gaps[0]['next_watched_at']) if group_gaps[0]['next_watched_at'] else None
+        prev_date = (
+            parse_datetime(group_gaps[0]["prev_watched_at"])
+            if group_gaps[0]["prev_watched_at"]
+            else None
+        )
+        next_date = (
+            parse_datetime(group_gaps[0]["next_watched_at"])
+            if group_gaps[0]["next_watched_at"]
+            else None
+        )
 
-        group_gaps.sort(key=lambda x: (x['season'], x['episode']))
+        group_gaps.sort(key=lambda x: (x["season"], x["episode"]))
 
         if prev_date and next_date:
             total_gap = next_date - prev_date
@@ -247,113 +275,135 @@ def calculate_intelligent_dates_for_gaps(gaps: List[Dict]) -> List[Dict]:
 
             for idx, gap in enumerate(group_gaps, 1):
                 proposed_date = prev_date + (interval * idx)
-                air_date = parse_datetime(gap['first_aired'])
+                air_date = parse_datetime(gap["first_aired"])
                 if air_date:
                     earliest_possible = air_date + timedelta(hours=12)
                     if proposed_date < earliest_possible:
                         proposed_date = earliest_possible
                     if proposed_date > next_date:
-                        proposed_date = next_date - timedelta(minutes=30 * (num_episodes - idx))
+                        proposed_date = next_date - timedelta(
+                            minutes=30 * (num_episodes - idx + 1)
+                        )
 
-                gap['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+                gap["calculated_watched_at"] = proposed_date.isoformat().replace(
+                    "+00:00", "Z"
+                )
 
         elif prev_date:
             for idx, gap in enumerate(group_gaps, 1):
                 days_offset = idx * 2
                 proposed_date = prev_date + timedelta(days=days_offset)
-                air_date = parse_datetime(gap['first_aired'])
+                air_date = parse_datetime(gap["first_aired"])
                 if air_date:
                     earliest_possible = air_date + timedelta(hours=12)
                     if proposed_date < earliest_possible:
                         proposed_date = earliest_possible
-                gap['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+                gap["calculated_watched_at"] = proposed_date.isoformat().replace(
+                    "+00:00", "Z"
+                )
 
         elif next_date:
             for idx, gap in enumerate(reversed(group_gaps), 1):
                 days_offset = idx * 2
                 proposed_date = next_date - timedelta(days=days_offset)
-                air_date = parse_datetime(gap['first_aired'])
+                air_date = parse_datetime(gap["first_aired"])
                 if air_date:
                     earliest_possible = air_date + timedelta(hours=12)
                     if proposed_date < earliest_possible:
                         proposed_date = earliest_possible
-                gap['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+                gap["calculated_watched_at"] = proposed_date.isoformat().replace(
+                    "+00:00", "Z"
+                )
 
         else:
             for idx, gap in enumerate(group_gaps):
-                air_date = parse_datetime(gap['first_aired'])
+                air_date = parse_datetime(gap["first_aired"])
                 if air_date:
                     offset_days = min(idx + 1, 7)
                     proposed_date = air_date + timedelta(days=offset_days, hours=20)
                 else:
-                    proposed_date = datetime.now() - timedelta(days=len(group_gaps) - idx)
-                gap['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+                    proposed_date = datetime.now(timezone.utc) - timedelta(
+                        days=len(group_gaps) - idx
+                    )
+                gap["calculated_watched_at"] = proposed_date.isoformat().replace(
+                    "+00:00", "Z"
+                )
 
     return gaps
 
 
-def calculate_dates_for_beginning(episodes: List[Dict], first_watched_date: Optional[str], 
-                                  avg_interval: timedelta) -> List[Dict]:
+def calculate_dates_for_beginning(
+    episodes: List[Dict], first_watched_date: Optional[str], avg_interval: timedelta
+) -> List[Dict]:
     """Calculate dates for episodes before first watched."""
-    episodes.sort(key=lambda x: (x['season'], x['episode']))
+    episodes.sort(key=lambda x: (x["season"], x["episode"]))
 
     if first_watched_date:
-        anchor_date = parse_datetime(first_watched_date)
+        anchor_date = parse_datetime(first_watched_date) or datetime.now(timezone.utc)
     else:
         # No watch history, use most recent air date + some time
         latest_air = None
         for ep in reversed(episodes):
-            air_date = parse_datetime(ep['first_aired'])
+            air_date = parse_datetime(ep["first_aired"])
             if air_date:
                 latest_air = air_date
                 break
-        anchor_date = latest_air + timedelta(days=30) if latest_air else datetime.now()
+        anchor_date = (
+            latest_air + timedelta(days=30)
+            if latest_air
+            else datetime.now(timezone.utc)
+        )
 
     # Work backwards from first watched
     for idx, ep in enumerate(reversed(episodes), 1):
         offset = avg_interval * idx
         proposed_date = anchor_date - offset
 
-        air_date = parse_datetime(ep['first_aired'])
+        air_date = parse_datetime(ep["first_aired"])
         if air_date:
             earliest_possible = air_date + timedelta(hours=12)
             if proposed_date < earliest_possible:
                 proposed_date = earliest_possible
 
-        ep['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+        ep["calculated_watched_at"] = proposed_date.isoformat().replace("+00:00", "Z")
 
     return episodes
 
 
-def calculate_dates_for_ending(episodes: List[Dict], last_watched_date: Optional[str], 
-                               avg_interval: timedelta) -> List[Dict]:
+def calculate_dates_for_ending(
+    episodes: List[Dict], last_watched_date: Optional[str], avg_interval: timedelta
+) -> List[Dict]:
     """Calculate dates for episodes after last watched."""
-    episodes.sort(key=lambda x: (x['season'], x['episode']))
+    episodes.sort(key=lambda x: (x["season"], x["episode"]))
 
     if last_watched_date:
-        anchor_date = parse_datetime(last_watched_date)
+        anchor_date = parse_datetime(last_watched_date) or datetime.now(timezone.utc)
     else:
         # No watch history, use earliest air date
         earliest_air = None
         for ep in episodes:
-            air_date = parse_datetime(ep['first_aired'])
+            air_date = parse_datetime(ep["first_aired"])
             if air_date:
                 earliest_air = air_date
                 break
-        anchor_date = earliest_air - timedelta(days=30) if earliest_air else datetime.now() - timedelta(days=365)
+        anchor_date = (
+            earliest_air - timedelta(days=30)
+            if earliest_air
+            else datetime.now(timezone.utc) - timedelta(days=365)
+        )
 
     # Work forwards from last watched
     for idx, ep in enumerate(episodes, 1):
         offset = avg_interval * idx
         proposed_date = anchor_date + offset
 
-        air_date = parse_datetime(ep['first_aired'])
+        air_date = parse_datetime(ep["first_aired"])
         if air_date:
             earliest_possible = air_date + timedelta(hours=12)
             if proposed_date < earliest_possible:
                 proposed_date = earliest_possible
 
-        ep['calculated_watched_at'] = proposed_date.isoformat().replace('+00:00', 'Z')
+        ep["calculated_watched_at"] = proposed_date.isoformat().replace("+00:00", "Z")
 
     return episodes
 
@@ -365,22 +415,19 @@ def mark_episodes_watched(headers, episodes: List[Dict], show_title: str) -> boo
 
     episode_data = []
     for ep in episodes:
-        watched_at = ep.get('calculated_watched_at')
+        watched_at = ep.get("calculated_watched_at")
         if not watched_at:
-            watched_at = datetime.now().isoformat() + "Z"
+            watched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        episode_data.append({
-            "watched_at": watched_at,
-            "ids": ep['ids']
-        })
+        episode_data.append({"watched_at": watched_at, "ids": ep["ids"]})
 
     payload = {"episodes": episode_data}
     url = f"{BASE_URL}/sync/history"
     response = requests.post(url, headers=headers, json=payload)
 
-    if response.status_code == 201:
+    if response.status_code in (200, 201):
         result = response.json()
-        added = result.get('added', {}).get('episodes', 0)
+        added = result.get("added", {}).get("episodes", 0)
         print(f"  ✓ Successfully marked {added} episodes as watched for '{show_title}'")
         return True
     else:
@@ -395,33 +442,33 @@ def parse_selection(input_str: str, max_num: int) -> List[Tuple[int, str]]:
     try:
         parts = input_str.strip().split()
         for part in parts:
-            if '-' in part and not any(x in part for x in ['b', 'e']):
+            if "-" in part and not any(x in part for x in ["b", "e"]):
                 # Range without modifier
-                start, end = part.split('-')
+                start, end = part.split("-")
                 start, end = int(start), int(end)
                 if start < 1 or end > max_num or start > end:
                     print(f"⚠️  Invalid range: {part}")
                     continue
                 for num in range(start, end + 1):
-                    selected.append((num, ''))
+                    selected.append((num, ""))
             else:
                 # Single number with possible modifier
-                modifier = ''
+                modifier = ""
                 num_str = part
 
-                if part.endswith('be'):
-                    modifier = 'be'
+                if part.endswith("be"):
+                    modifier = "be"
                     num_str = part[:-2]
-                elif part.endswith('b'):
-                    modifier = 'b'
+                elif part.endswith("b"):
+                    modifier = "b"
                     num_str = part[:-1]
-                elif part.endswith('e'):
-                    modifier = 'e'
+                elif part.endswith("e"):
+                    modifier = "e"
                     num_str = part[:-1]
 
                 # Handle range with modifier (e.g., 1-3b)
-                if '-' in num_str:
-                    start, end = num_str.split('-')
+                if "-" in num_str:
+                    start, end = num_str.split("-")
                     start, end = int(start), int(end)
                     if start < 1 or end > max_num or start > end:
                         print(f"⚠️  Invalid range: {part}")
@@ -451,7 +498,7 @@ def main():
 
     credentials = load_credentials()
     headers = get_headers(credentials)
-    username = credentials['USERNAME']
+    username = credentials["USERNAME"]
     print(f"✓ Authenticated as: {username}")
     print()
 
@@ -459,7 +506,7 @@ def main():
     try:
         watch_history_raw = get_watch_history(headers, username)
         print(f"✓ Loaded watch history")
-    except:
+    except Exception:
         print(f"⚠️  Could not fetch detailed history")
         watch_history_raw = {}
 
@@ -482,37 +529,39 @@ def main():
         percent = (idx / total) * 100
         bar_length = 40
         filled = int(bar_length * idx / total)
-        bar = '█' * filled + '-' * (bar_length - filled)
-        print(f'\r[{bar}] {percent:.0f}% ({idx}/{total})', end='', flush=True)
+        bar = "█" * filled + "-" * (bar_length - filled)
+        print(f"\r[{bar}] {percent:.0f}% ({idx}/{total})", end="", flush=True)
 
-        show = show_data['show']
-        show_title = show['title']
-        show_id = show['ids']['trakt']
+        show = show_data["show"]
+        show_title = show["title"]
+        show_id = show["ids"]["trakt"]
 
         # quick filtering
-        total_aired = show.get('aired_episodes', 0)
-        watched_count = sum(len(season['episodes']) for season in show_data['seasons'])
-        
+        total_aired = show.get("aired_episodes", 0)
+        watched_count = sum(len(season["episodes"]) for season in show_data["seasons"])
+
         if watched_count >= total_aired and total_aired > 0:
             continue
 
         watched_episodes = set()
-        for season in show_data['seasons']:
-            season_num = season['number']
-            for episode in season['episodes']:
-                episode_num = episode['number']
+        for season in show_data["seasons"]:
+            season_num = season["number"]
+            for episode in season["episodes"]:
+                episode_num = episode["number"]
                 watched_episodes.add((season_num, episode_num))
 
         try:
             all_episodes = get_all_episodes(headers, show_id)
-        except:
+        except Exception:
             continue
 
         show_history = watch_history_raw.get(show_id, {})
 
-        missing = find_all_missing_episodes(watched_episodes, all_episodes, show_history)
+        missing = find_all_missing_episodes(
+            watched_episodes, all_episodes, show_history
+        )
 
-        if missing['beginning'] or missing['gaps'] or missing['ending']:
+        if missing["beginning"] or missing["gaps"] or missing["ending"]:
             # Calculate average interval for this show
             avg_interval = calculate_average_interval(show_history)
 
@@ -524,16 +573,18 @@ def main():
                 first_watched_date = sorted_dates[0] if sorted_dates else None
                 last_watched_date = sorted_dates[-1] if sorted_dates else None
 
-            shows_with_missing.append({
-                'title': show_title,
-                'show_id': show_id,
-                'missing': missing,
-                'watched_count': len(watched_episodes),
-                'total_count': len(all_episodes), # Toto je orientačné
-                'avg_interval': avg_interval,
-                'first_watched_date': first_watched_date,
-                'last_watched_date': last_watched_date
-            })
+            shows_with_missing.append(
+                {
+                    "title": show_title,
+                    "show_id": show_id,
+                    "missing": missing,
+                    "watched_count": len(watched_episodes),
+                    "total_count": len(all_episodes),  # Toto je orientačné
+                    "avg_interval": avg_interval,
+                    "first_watched_date": first_watched_date,
+                    "last_watched_date": last_watched_date,
+                }
+            )
 
     print()  # New line after progress
     print()
@@ -552,11 +603,11 @@ def main():
         print(f"    Watched: {show['watched_count']} episodes")
 
         parts = []
-        if show['missing']['beginning']:
+        if show["missing"]["beginning"]:
             parts.append(f"{len(show['missing']['beginning'])} before first")
-        if show['missing']['gaps']:
+        if show["missing"]["gaps"]:
             parts.append(f"{len(show['missing']['gaps'])} gaps")
-        if show['missing']['ending']:
+        if show["missing"]["ending"]:
             parts.append(f"{len(show['missing']['ending'])} after last")
 
         print(f"    Missing: {', '.join(parts)}")
@@ -577,13 +628,13 @@ def main():
 
     selection_input = input("Your selection: ").strip().lower()
 
-    if not selection_input or selection_input == 'cancel':
+    if not selection_input or selection_input == "cancel":
         print("\nCancelled.")
         return
 
     # Handle special 'all' cases
-    if selection_input.startswith('all'):
-        modifier = selection_input[3:] if len(selection_input) > 3 else ''
+    if selection_input.startswith("all"):
+        modifier = selection_input[3:] if len(selection_input) > 3 else ""
         selected = [(i, modifier) for i in range(1, len(shows_with_missing) + 1)]
     else:
         selected = parse_selection(selection_input, len(shows_with_missing))
@@ -599,37 +650,41 @@ def main():
         episodes_to_mark = []
 
         # Determine what to include
-        include_beginning = 'b' in modifier
+        include_beginning = "b" in modifier
         include_gaps = True  # Always include gaps
-        include_ending = 'e' in modifier
+        include_ending = "e" in modifier
 
-        if include_beginning and show['missing']['beginning']:
+        if include_beginning and show["missing"]["beginning"]:
             beginning_eps = calculate_dates_for_beginning(
-                show['missing']['beginning'].copy(),
-                show['first_watched_date'],
-                show['avg_interval']
+                show["missing"]["beginning"].copy(),
+                show["first_watched_date"],
+                show["avg_interval"],
             )
             episodes_to_mark.extend(beginning_eps)
 
-        if include_gaps and show['missing']['gaps']:
-            gap_eps = calculate_intelligent_dates_for_gaps(show['missing']['gaps'].copy())
+        if include_gaps and show["missing"]["gaps"]:
+            gap_eps = calculate_intelligent_dates_for_gaps(
+                show["missing"]["gaps"].copy()
+            )
             episodes_to_mark.extend(gap_eps)
 
-        if include_ending and show['missing']['ending']:
+        if include_ending and show["missing"]["ending"]:
             ending_eps = calculate_dates_for_ending(
-                show['missing']['ending'].copy(),
-                show['last_watched_date'],
-                show['avg_interval']
+                show["missing"]["ending"].copy(),
+                show["last_watched_date"],
+                show["avg_interval"],
             )
             episodes_to_mark.extend(ending_eps)
 
         if episodes_to_mark:
-            to_process.append({
-                'show': show,
-                'episodes': episodes_to_mark,
-                'modifier': modifier,
-                'show_num': show_num
-            })
+            to_process.append(
+                {
+                    "show": show,
+                    "episodes": episodes_to_mark,
+                    "modifier": modifier,
+                    "show_num": show_num,
+                }
+            )
 
     # Confirmation
     print()
@@ -637,12 +692,14 @@ def main():
     print(f"Will mark {sum(len(p['episodes']) for p in to_process)} episodes:")
     print("=" * 70)
     for item in to_process:
-        mod_text = f" ({item['modifier']})" if item['modifier'] else ""
-        print(f"  [{item['show_num']}] {item['show']['title']}{mod_text}: {len(item['episodes'])} episodes")
+        mod_text = f" ({item['modifier']})" if item["modifier"] else ""
+        print(
+            f"  [{item['show_num']}] {item['show']['title']}{mod_text}: {len(item['episodes'])} episodes"
+        )
     print()
 
     confirm = input("Proceed? (yes/no): ").strip().lower()
-    if confirm not in ['yes', 'y']:
+    if confirm not in ["yes", "y"]:
         print("\nCancelled.")
         return
 
@@ -655,7 +712,7 @@ def main():
     success_count = 0
     for item in to_process:
         print(f"Processing: {item['show']['title']}")
-        if mark_episodes_watched(headers, item['episodes'], item['show']['title']):
+        if mark_episodes_watched(headers, item["episodes"], item["show"]["title"]):
             success_count += 1
 
     print()

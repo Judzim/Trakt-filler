@@ -7,6 +7,7 @@ This script helps you authenticate with Trakt and get your access token.
 import requests
 import webbrowser
 import os
+from datetime import datetime
 from urllib.parse import urlencode
 
 REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"  # For PIN-based auth
@@ -44,7 +45,7 @@ def load_client_credentials():
 def save_credentials(client_id, client_secret, access_token, username):
     """Save credentials to file."""
     content = f"""# Trakt API Credentials
-# Generated on {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 CLIENT_ID={client_id}
 CLIENT_SECRET={client_secret}
@@ -71,7 +72,7 @@ def get_username(access_token, client_id):
         response = requests.get(f"{BASE_URL}/users/settings", headers=headers)
         response.raise_for_status()
         return response.json()['user']['username']
-    except:
+    except Exception:
         return None
 
 
@@ -145,7 +146,7 @@ def main():
 
     try:
         webbrowser.open(auth_url)
-    except:
+    except Exception:
         pass
 
     print()
